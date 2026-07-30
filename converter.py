@@ -167,6 +167,89 @@ def normalize_parentheses(value: Any) -> str:
         .replace("）", ")")
     )
 
+def extract_name_from_parentheses(value: Any) -> str:
+    """
+    Extract a name from a value enclosed in parentheses.
+
+    Examples:
+        (陽上林玉瑩)   -> 林玉瑩
+        （陽上林玉瑩） -> 林玉瑩
+        (陳美玲)       -> 陳美玲
+        普通名稱       -> ""
+    """
+
+    text = normalize_parentheses(value)
+
+    match = re.fullmatch(
+        r"\(\s*(.*?)\s*\)",
+        text,
+    )
+
+    if not match:
+        return ""
+
+    name = clean_value(match.group(1))
+
+    # Remove 陽上 from the beginning.
+    name = re.sub(
+        r"^陽上\s*",
+        "",
+        name,
+    ).strip()
+
+    return name
+
+
+def process_ypw_labels(
+    labels: list[str],
+    original_sp: str,
+) -> tuple[str, list[str]]:
+    """
+    Separate YPW SP names from ordinary labels.
+
+    Parenthesized values become SP names.
+    Ordinary values remain as output labels.
+
+    Example:
+        labels:
+            普通名稱
+            (陽上林玉瑩)
+            （陳美玲）
+
+        result:
+            sp = 林玉瑩 陳美玲
+            labels = ["普通名稱"]
+    """
+
+    extracted_names = []
+    output_labels = []
+
+    for label in labels:
+        extracted_name = extract_name_from_parentheses(
+            label
+        )
+
+        if extracted_name:
+            extracted_names.append(
+                extracted_name
+            )
+        else:
+            output_labels.append(
+                clean_value(label)
+            )
+
+    # Remove duplicate names while preserving order.
+    unique_names = list(
+        dict.fromkeys(extracted_names)
+    )
+
+    if unique_names:
+        output_sp = " ".join(unique_names)
+    else:
+        output_sp = clean_value(original_sp)
+
+    return output_sp, output_labels
+
 
 def clean_extracted_name(value: Any) -> str:
     """
@@ -416,17 +499,22 @@ def expand_source_data(
     conversion_type: str = "HPW",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Expand comma-separated labels into individual records.
-
-    Reference numbering is calculated across all records
-    having the same base reference.
+    Expand source records.
 
     HPW:
-        Keep the source SP.
+        Every comma-separated label becomes one output record.
+        The original SP is retained.
 
     YPW:
-        Extract SP from labels containing 陽上 or
-        parenthesized names.
+        Parenthesized values become SP names.
+        Non-parenthesized values become output labels.
+
+    Example:
+        普通名稱, (陽上林玉瑩), （陳美玲）
+
+    becomes:
+        sp: 林玉瑩 陳美玲
+        label: 普通名稱
     """
 
     conversion_type = clean_value(
@@ -443,21 +531,18 @@ def expand_source_data(
 
     if large_width < 1:
         raise ValueError(
-            "Large-font width must be at least 1."
+            "Large-font maximum width must be at least 1."
         )
 
     if medium_width <= large_width:
         raise ValueError(
-            "Medium-font width must be greater "
-            "than large-font width."
+            "Medium-font maximum width must be greater "
+            "than large-font maximum width."
         )
 
-    expanded_rows: list[dict[str, Any]] = []
-    validation_rows: list[dict[str, Any]] = []
+    expanded_rows = []
+    validation_rows = []
 
-    # -----------------------------------------------------
-    # First pass: expand all labels
-    # -----------------------------------------------------
     for source_index, source_row in source_df.iterrows():
         excel_row = source_index + 2
 
@@ -469,21 +554,9 @@ def expand_source_data(
             source_row.get("ref", "")
         )
 
-        labels = split_labels(
+        source_labels = split_labels(
             source_row.get("label", "")
         )
-
-        if not original_sp:
-            validation_rows.append(
-                {
-                    "severity": "Warning",
-                    "source_row": excel_row,
-                    "sp": "",
-                    "ref": base_reference,
-                    "label": "",
-                    "message": "The source SP is empty.",
-                }
-            )
 
         if not base_reference:
             validation_rows.append(
@@ -497,7 +570,7 @@ def expand_source_data(
                 }
             )
 
-        if not labels:
+        if not source_labels:
             validation_rows.append(
                 {
                     "severity": "Warning",
@@ -505,26 +578,59 @@ def expand_source_data(
                     "sp": original_sp,
                     "ref": base_reference,
                     "label": "",
+                    "message": "No valid labels were found.",
+                }
+            )
+            continue
+
+        # -----------------------------------------------
+        # Determine SP and output labels
+        # -----------------------------------------------
+        if conversion_type == "YPW":
+            output_sp, output_labels = process_ypw_labels(
+                labels=source_labels,
+                original_sp=original_sp,
+            )
+        else:
+            output_sp = original_sp
+            output_labels = source_labels
+
+        if not output_sp:
+            validation_rows.append(
+                {
+                    "severity": "Warning",
+                    "source_row": excel_row,
+                    "sp": "",
+                    "ref": base_reference,
+                    "label": "",
+                    "message": "The output SP is empty.",
+                }
+            )
+
+        # A YPW row might contain only parenthesized names.
+        if not output_labels:
+            validation_rows.append(
+                {
+                    "severity": "Warning",
+                    "source_row": excel_row,
+                    "sp": output_sp,
+                    "ref": base_reference,
+                    "label": "",
                     "message": (
-                        "No valid labels were found "
-                        "in this source row."
+                        "No ordinary label remains after "
+                        "extracting the YPW SP names."
                     ),
                 }
             )
             continue
 
+        # -----------------------------------------------
+        # Create one record for each ordinary label
+        # -----------------------------------------------
         for label_order, label in enumerate(
-            labels,
+            output_labels,
             start=1,
         ):
-            if conversion_type == "YPW":
-                output_sp = extract_ypw_sp(
-                    label=label,
-                    original_sp=original_sp,
-                )
-            else:
-                output_sp = original_sp
-
             label_size, visual_width = (
                 determine_label_size(
                     label=label,
@@ -535,7 +641,7 @@ def expand_source_data(
 
             expanded_rows.append(
                 {
-                    "source_order": int(source_index),
+                    "source_order": source_index,
                     "source_row": excel_row,
                     "label_order": label_order,
                     "conversion_type": conversion_type,
@@ -543,8 +649,6 @@ def expand_source_data(
                     "sp": output_sp,
                     "base_ref": base_reference,
                     "label": label,
-
-                    # Only one font field contains the label.
                     "label_large": (
                         label
                         if label_size == "large"
@@ -560,39 +664,98 @@ def expand_source_data(
                         if label_size == "small"
                         else ""
                     ),
-
                     "label_size": label_size,
                     "label_visual_width": visual_width,
                 }
             )
 
-            if (
-                conversion_type == "YPW"
-                and output_sp == original_sp
-                and (
-                    "陽上" in label
-                    or "(" in normalize_parentheses(label)
-                )
-            ):
-                validation_rows.append(
-                    {
-                        "severity": "Information",
-                        "source_row": excel_row,
-                        "sp": original_sp,
-                        "ref": base_reference,
-                        "label": label,
-                        "message": (
-                            "YPW name extraction did not "
-                            "change the source SP."
-                        ),
-                    }
-                )
-
     if not expanded_rows:
         raise ValueError(
-            "No output records were created. Check that "
-            "the source file contains valid labels."
+            "No output records were created."
         )
+
+    # Count all resulting records for each reference.
+    reference_totals = Counter(
+        row["base_ref"]
+        for row in expanded_rows
+        if row["base_ref"]
+    )
+
+    reference_sequence = defaultdict(int)
+
+    for row in expanded_rows:
+        base_reference = row["base_ref"]
+
+        if base_reference:
+            reference_sequence[
+                base_reference
+            ] += 1
+
+            record_number = reference_sequence[
+                base_reference
+            ]
+
+            total_records = reference_totals[
+                base_reference
+            ]
+
+            row["label_number"] = record_number
+            row["total_labels"] = total_records
+
+            row["ref"] = generate_reference(
+                base_reference=base_reference,
+                record_number=record_number,
+                total_records=total_records,
+            )
+        else:
+            row["label_number"] = ""
+            row["total_labels"] = ""
+            row["ref"] = ""
+
+    expanded_df = pd.DataFrame(
+        expanded_rows
+    )
+
+    expanded_df = expanded_df.sort_values(
+        by=[
+            "source_order",
+            "label_order",
+        ],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    expanded_df = expanded_df[
+        [
+            "source_row",
+            "conversion_type",
+            "original_sp",
+            "sp",
+            "base_ref",
+            "ref",
+            "label_number",
+            "total_labels",
+            "label",
+            "label_large",
+            "label_medium",
+            "label_small",
+            "label_size",
+            "label_visual_width",
+        ]
+    ]
+
+    validation_df = pd.DataFrame(
+        validation_rows,
+        columns=[
+            "severity",
+            "source_row",
+            "sp",
+            "ref",
+            "label",
+            "message",
+        ],
+    )
+
+    return expanded_df, validation_df
 
     # -----------------------------------------------------
     # Count all records by reference.
