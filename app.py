@@ -12,83 +12,117 @@ st.set_page_config(
 st.title("Excel Mail Merge Converter")
 
 st.write(
-    "Convert the original Excel file into a four-column "
-    "Word Mail Merge recipient format."
+    "Upload an Excel file containing the columns "
+    "`sp`, `ref`, and `label`."
 )
 
-# ---------------------------------------------------------
+# =========================================================
 # Step 1: Upload
-# ---------------------------------------------------------
+# =========================================================
 
 st.header("Step 1 — Upload Excel")
 
 uploaded_file = st.file_uploader(
-    "Choose the original Excel file",
+    "Choose the source Excel file",
     type=["xlsx"],
     help="The Excel file must contain sp, ref, and label columns.",
 )
 
-with st.expander("View required Excel format"):
+with st.expander("View required source format"):
     st.markdown(
         """
-        | sp | ref | label |
-        |---|---|---|
-        | 江素 | y007 | 江氏歷代祖先 |
-        | Sabrina Lam 林玉瑩 | y015 | 多生父母師長..., 歷劫怨親債主... |
-        """
+| sp | ref | label |
+|---|---|---|
+| name001 | y007 | label001 |
+| name002 | y015 | label002, label003 |
+| name003 | y020 | label004, label005, label006 |
+"""
     )
 
-# ---------------------------------------------------------
+# =========================================================
 # Step 2: Settings
-# ---------------------------------------------------------
+# =========================================================
 
 st.header("Step 2 — Conversion Settings")
 
-column1, column2, column3 = st.columns(3)
+settings_col1, settings_col2, settings_col3 = st.columns(3)
 
-with column1:
+with settings_col1:
     records_per_row = st.number_input(
-        "Labels per output row",
+        "Records on each output row",
         min_value=1,
-        max_value=10,
+        max_value=20,
         value=4,
         step=1,
+        help=(
+            "For example, selecting 4 creates "
+            "sp1/ref1/label1 through sp4/ref4/label4."
+        ),
     )
 
-with column2:
+with settings_col2:
     large_width = st.number_input(
-        "Large-font maximum width",
+        "Large-font maximum visual width",
         min_value=1,
         max_value=100,
         value=16,
         step=1,
     )
 
-with column3:
+with settings_col3:
     medium_width = st.number_input(
-        "Medium-font maximum width",
-        min_value=1,
+        "Medium-font maximum visual width",
+        min_value=2,
         max_value=150,
         value=28,
         step=1,
     )
 
-st.caption(
-    "Labels up to the large-width limit use the large Word field. "
-    "Labels up to the medium-width limit use the medium Word field. "
-    "Longer labels use the small Word field."
+if medium_width <= large_width:
+    st.warning(
+        "Medium-font maximum width must be greater "
+        "than large-font maximum width."
+    )
+
+st.info(
+    f"The output will contain {int(records_per_row)} records "
+    "on each Excel row."
 )
 
-# ---------------------------------------------------------
+# Show the dynamic field names.
+with st.expander("View generated mail-merge columns"):
+    generated_columns = []
+
+    for number in range(1, int(records_per_row) + 1):
+        generated_columns.extend(
+            [
+                f"sp{number}",
+                f"ref{number}",
+                f"label{number}",
+                f"label{number}_large",
+                f"label{number}_medium",
+                f"label{number}_small",
+                f"label{number}_size",
+            ]
+        )
+
+    st.code("\n".join(generated_columns))
+
+# =========================================================
 # Step 3: Convert
-# ---------------------------------------------------------
+# =========================================================
 
 st.header("Step 3 — Convert")
+
+can_convert = (
+    uploaded_file is not None
+    and medium_width > large_width
+)
 
 convert_clicked = st.button(
     "Convert Excel",
     type="primary",
-    disabled=uploaded_file is None,
+    disabled=not can_convert,
 )
 
 if uploaded_file is None:
@@ -104,31 +138,24 @@ if convert_clicked:
                 medium_width=int(medium_width),
             )
 
-        output_buffer = result["output"]
-        original_df = result["original"]
-        expanded_df = result["expanded"]
-        mail_merge_df = result["mail_merge"]
-        validation_df = result["validation"]
+        st.session_state["conversion_result"] = {
+            "output": result["output"].getvalue(),
+            "original": result["original"],
+            "expanded": result["expanded"],
+            "mail_merge": result["mail_merge"],
+            "validation": result["validation"],
+            "records_per_row": int(records_per_row),
+        }
 
         st.success("Conversion completed successfully.")
-
-        # Save the result in session state so it remains
-        # available after Streamlit reruns the page.
-        st.session_state["conversion_result"] = {
-            "output": output_buffer.getvalue(),
-            "original": original_df,
-            "expanded": expanded_df,
-            "mail_merge": mail_merge_df,
-            "validation": validation_df,
-        }
 
     except Exception as error:
         st.error(f"Conversion failed: {error}")
         st.exception(error)
 
-# ---------------------------------------------------------
-# Step 4: Preview and download
-# ---------------------------------------------------------
+# =========================================================
+# Step 4: Preview
+# =========================================================
 
 if "conversion_result" in st.session_state:
     result = st.session_state["conversion_result"]
@@ -152,15 +179,9 @@ if "conversion_result" in st.session_state:
         len(result["mail_merge"]),
     )
 
-    warning_count = len(
-        result["validation"][
-            result["validation"]["severity"] == "Warning"
-        ]
-    )
-
     metric4.metric(
-        "Warnings",
-        warning_count,
+        "Records per row",
+        result["records_per_row"],
     )
 
     preview_tab, expanded_tab, validation_tab = st.tabs(
@@ -174,35 +195,51 @@ if "conversion_result" in st.session_state:
     with preview_tab:
         preview_columns = []
 
-        for column in result["mail_merge"].columns:
-            if (
-                column.startswith("sp")
-                or column.startswith("ref")
-                or (
-                    column.startswith("label")
-                    and "_" not in column
-                )
-            ):
-                preview_columns.append(column)
+        for number in range(
+            1,
+            result["records_per_row"] + 1,
+        ):
+            preview_columns.extend(
+                [
+                    f"sp{number}",
+                    f"ref{number}",
+                    f"label{number}",
+                ]
+            )
+
+        existing_preview_columns = [
+            column
+            for column in preview_columns
+            if column in result["mail_merge"].columns
+        ]
 
         st.dataframe(
-            result["mail_merge"][preview_columns],
+            result["mail_merge"][existing_preview_columns],
             use_container_width=True,
             hide_index=True,
         )
 
     with expanded_tab:
+        expanded_columns = [
+            "source_row",
+            "sp",
+            "base_ref",
+            "ref",
+            "label_number",
+            "total_labels",
+            "label",
+            "label_size",
+            "label_visual_width",
+        ]
+
+        existing_expanded_columns = [
+            column
+            for column in expanded_columns
+            if column in result["expanded"].columns
+        ]
+
         st.dataframe(
-            result["expanded"][
-                [
-                    "sp",
-                    "base_ref",
-                    "ref",
-                    "label",
-                    "label_size",
-                    "label_visual_width",
-                ]
-            ],
+            result["expanded"][existing_expanded_columns],
             use_container_width=True,
             hide_index=True,
         )
@@ -216,6 +253,10 @@ if "conversion_result" in st.session_state:
                 use_container_width=True,
                 hide_index=True,
             )
+
+    # =====================================================
+    # Step 5: Download
+    # =====================================================
 
     st.header("Step 5 — Download")
 
