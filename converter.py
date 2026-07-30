@@ -3,38 +3,12 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
-from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-
-
-@dataclass(frozen=True)
-class ReferenceRule:
-    start: int
-    step: int
-    total: int
-
-
-REFERENCE_RULES = {
-    "y007": ReferenceRule(1, 1, 1),
-    "y015": ReferenceRule(4, 4, 13),
-    "y016": ReferenceRule(3, 1, 5),
-    "y017": ReferenceRule(2, 1, 5),
-    "y018": ReferenceRule(1, 1, 4),
-    "y020": ReferenceRule(1, 4, 12),
-    "y025": ReferenceRule(1, 1, 1),
-    "y029": ReferenceRule(1, 1, 4),
-    "y037": ReferenceRule(3, 1, 3),
-    "y040": ReferenceRule(2, 4, 10),
-    "y046": ReferenceRule(4, 1, 5),
-    "y047": ReferenceRule(3, 1, 6),
-    "y048": ReferenceRule(1, 4, 8),
-    "y049": ReferenceRule(1, 4, 10),
-}
 
 
 def clean_value(value: Any) -> str:
@@ -45,13 +19,13 @@ def clean_value(value: Any) -> str:
 
 
 def normalize_reference(value: Any) -> str:
-    reference = clean_value(value).lower()
+    reference = clean_value(value)
 
     return re.sub(
         r"-\d+/\d+$",
         "",
         reference,
-    )
+    ).strip()
 
 
 def split_labels(value: Any) -> list[str]:
@@ -107,44 +81,40 @@ def determine_label_size(
 
 def generate_reference(
     base_reference: str,
-    label_index: int,
-) -> tuple[str, str]:
+    label_number: int,
+    total_labels: int,
+) -> str:
+    """
+    Generate a reference such as:
+
+        y050-01/08
+        y050-02/08
+        y050-08/08
+
+    The number width automatically expands when there are
+    more than 99 labels.
+    """
+
     base_reference = normalize_reference(
         base_reference
     )
 
     if not base_reference:
-        return "", "Reference is empty."
+        return ""
 
-    rule = REFERENCE_RULES.get(base_reference)
+    if total_labels < 1:
+        return base_reference
 
-    if rule is None:
-        return (
-            base_reference,
-            f"No reference rule exists for {base_reference}.",
-        )
-
-    position = (
-        rule.start
-        + label_index * rule.step
+    number_width = max(
+        2,
+        len(str(total_labels)),
     )
 
-    full_reference = (
+    return (
         f"{base_reference}-"
-        f"{position:02d}/"
-        f"{rule.total:02d}"
+        f"{label_number:0{number_width}d}/"
+        f"{total_labels:0{number_width}d}"
     )
-
-    warning = ""
-
-    if position > rule.total:
-        warning = (
-            f"Generated reference {full_reference} "
-            "exceeds the configured total."
-        )
-
-    return full_reference, warning
-
 
 def validate_columns(
     dataframe: pd.DataFrame,
@@ -177,19 +147,22 @@ def expand_source_data(
     expanded_rows = []
     validation_rows = []
 
-    for index, source_row in source_df.iterrows():
-        excel_row = index + 2
+    # -----------------------------------------------------
+    # Step 1: Expand every source row into individual labels
+    # -----------------------------------------------------
+    for source_index, source_row in source_df.iterrows():
+        excel_row = source_index + 2
 
         sp = clean_value(
-            source_row["sp"]
+            source_row.get("sp", "")
         )
 
         base_reference = normalize_reference(
-            source_row["ref"]
+            source_row.get("ref", "")
         )
 
         labels = split_labels(
-            source_row["label"]
+            source_row.get("label", "")
         )
 
         if not sp:
@@ -197,7 +170,7 @@ def expand_source_data(
                 {
                     "severity": "Warning",
                     "source_row": excel_row,
-                    "sp": sp,
+                    "sp": "",
                     "ref": base_reference,
                     "message": "The sp value is empty.",
                 }
@@ -209,8 +182,8 @@ def expand_source_data(
                     "severity": "Warning",
                     "source_row": excel_row,
                     "sp": sp,
-                    "ref": base_reference,
-                    "message": "The ref value is empty.",
+                    "ref": "",
+                    "message": "The reference is empty.",
                 }
             )
 
@@ -226,26 +199,23 @@ def expand_source_data(
             )
             continue
 
-        for label_index, label in enumerate(labels):
-            full_reference, warning = generate_reference(
-                base_reference=base_reference,
-                label_index=label_index,
-            )
-
-            label_size, visual_width = (
-                determine_label_size(
-                    label=label,
-                    large_width=large_width,
-                    medium_width=medium_width,
-                )
+        for label_order_in_source, label in enumerate(
+            labels,
+            start=1,
+        ):
+            label_size, visual_width = determine_label_size(
+                label=label,
+                large_width=large_width,
+                medium_width=medium_width,
             )
 
             expanded_rows.append(
                 {
+                    "source_order": source_index,
                     "source_row": excel_row,
+                    "label_order_in_source": label_order_in_source,
                     "sp": sp,
                     "base_ref": base_reference,
-                    "ref": full_reference,
                     "label": label,
                     "label_large": (
                         label
@@ -267,32 +237,152 @@ def expand_source_data(
                 }
             )
 
-            if warning:
-                validation_rows.append(
-                    {
-                        "severity": "Warning",
-                        "source_row": excel_row,
-                        "sp": sp,
-                        "ref": base_reference,
-                        "message": warning,
-                    }
-                )
+    expanded_df = pd.DataFrame(expanded_rows)
 
-    expanded_df = pd.DataFrame(
-        expanded_rows,
-        columns=[
+    if expanded_df.empty:
+        expanded_df = pd.DataFrame(
+            columns=[
+                "source_order",
+                "source_row",
+                "label_order_in_source",
+                "sp",
+                "base_ref",
+                "ref",
+                "label_number",
+                "total_labels",
+                "label",
+                "label_large",
+                "label_medium",
+                "label_small",
+                "label_size",
+                "label_visual_width",
+            ]
+        )
+
+        validation_df = pd.DataFrame(
+            validation_rows,
+            columns=[
+                "severity",
+                "source_row",
+                "sp",
+                "ref",
+                "message",
+            ],
+        )
+
+        return expanded_df, validation_df
+
+    # -----------------------------------------------------
+    # Step 2: Keep the original workbook order
+    # -----------------------------------------------------
+    expanded_df = expanded_df.sort_values(
+        by=[
+            "source_order",
+            "label_order_in_source",
+        ],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    # -----------------------------------------------------
+    # Step 3: Number all labels belonging to the same ref
+    # -----------------------------------------------------
+    valid_reference = (
+        expanded_df["base_ref"]
+        .astype(str)
+        .str.strip()
+        .ne("")
+    )
+
+    expanded_df["label_number"] = ""
+    expanded_df["total_labels"] = ""
+    expanded_df["ref"] = ""
+
+    valid_df = expanded_df.loc[valid_reference].copy()
+
+    valid_df["label_number"] = (
+        valid_df.groupby(
+            "base_ref",
+            sort=False,
+        ).cumcount()
+        + 1
+    )
+
+    valid_df["total_labels"] = (
+        valid_df.groupby(
+            "base_ref",
+            sort=False,
+        )["base_ref"].transform("size")
+    )
+
+    expanded_df.loc[
+        valid_reference,
+        "label_number",
+    ] = valid_df["label_number"]
+
+    expanded_df.loc[
+        valid_reference,
+        "total_labels",
+    ] = valid_df["total_labels"]
+
+    # -----------------------------------------------------
+    # Step 4: Generate references such as y050-01/08
+    # -----------------------------------------------------
+    def build_full_reference(row) -> str:
+        base_reference = clean_value(
+            row["base_ref"]
+        )
+
+        if not base_reference:
+            return ""
+
+        label_number = int(
+            row["label_number"]
+        )
+
+        total_labels = int(
+            row["total_labels"]
+        )
+
+        number_width = max(
+            2,
+            len(str(total_labels)),
+        )
+
+        return (
+            f"{base_reference}-"
+            f"{label_number:0{number_width}d}/"
+            f"{total_labels:0{number_width}d}"
+        )
+
+    expanded_df.loc[
+        valid_reference,
+        "ref",
+    ] = expanded_df.loc[
+        valid_reference
+    ].apply(
+        build_full_reference,
+        axis=1,
+    )
+
+    # -----------------------------------------------------
+    # Step 5: Arrange final columns
+    # -----------------------------------------------------
+    expanded_df = expanded_df[
+        [
             "source_row",
             "sp",
             "base_ref",
             "ref",
+            "label_number",
+            "total_labels",
             "label",
             "label_large",
             "label_medium",
             "label_small",
             "label_size",
             "label_visual_width",
-        ],
-    )
+        ]
+    ]
 
     validation_df = pd.DataFrame(
         validation_rows,
@@ -312,6 +402,24 @@ def create_mail_merge_data(
     expanded_df: pd.DataFrame,
     group_size: int,
 ) -> pd.DataFrame:
+    """
+    Group expanded label records into configurable output rows.
+
+    For group_size=4, the output contains:
+        sp1, ref1, label1, ...
+        sp2, ref2, label2, ...
+        sp3, ref3, label3, ...
+        sp4, ref4, label4, ...
+
+    For group_size=6, the output continues through:
+        sp6, ref6, label6, ...
+    """
+
+    if group_size < 1:
+        raise ValueError(
+            "Records per row must be at least 1."
+        )
+
     output_rows = []
 
     for start_index in range(
@@ -328,50 +436,76 @@ def create_mail_merge_data(
         for position in range(group_size):
             number = position + 1
 
-            field_names = {
-                "sp": f"sp{number}",
-                "ref": f"ref{number}",
-                "label": f"label{number}",
-                "large": f"label{number}_large",
-                "medium": f"label{number}_medium",
-                "small": f"label{number}_small",
-                "size": f"label{number}_size",
-            }
-
             if position < len(group):
                 record = group.iloc[position]
 
-                output_row[
-                    field_names["sp"]
-                ] = record["sp"]
+                output_row[f"sp{number}"] = clean_value(
+                    record.get("sp", "")
+                )
+
+                output_row[f"ref{number}"] = clean_value(
+                    record.get("ref", "")
+                )
+
+                output_row[f"label{number}"] = clean_value(
+                    record.get("label", "")
+                )
 
                 output_row[
-                    field_names["ref"]
-                ] = record["ref"]
+                    f"label{number}_large"
+                ] = clean_value(
+                    record.get("label_large", "")
+                )
 
                 output_row[
-                    field_names["label"]
-                ] = record["label"]
+                    f"label{number}_medium"
+                ] = clean_value(
+                    record.get("label_medium", "")
+                )
 
                 output_row[
-                    field_names["large"]
-                ] = record["label_large"]
+                    f"label{number}_small"
+                ] = clean_value(
+                    record.get("label_small", "")
+                )
 
                 output_row[
-                    field_names["medium"]
-                ] = record["label_medium"]
+                    f"label{number}_size"
+                ] = clean_value(
+                    record.get("label_size", "")
+                )
 
                 output_row[
-                    field_names["small"]
-                ] = record["label_small"]
-
-                output_row[
-                    field_names["size"]
-                ] = record["label_size"]
+                    f"label{number}_visual_width"
+                ] = record.get(
+                    "label_visual_width",
+                    "",
+                )
 
             else:
-                for field_name in field_names.values():
-                    output_row[field_name] = ""
+                output_row[f"sp{number}"] = ""
+                output_row[f"ref{number}"] = ""
+                output_row[f"label{number}"] = ""
+
+                output_row[
+                    f"label{number}_large"
+                ] = ""
+
+                output_row[
+                    f"label{number}_medium"
+                ] = ""
+
+                output_row[
+                    f"label{number}_small"
+                ] = ""
+
+                output_row[
+                    f"label{number}_size"
+                ] = ""
+
+                output_row[
+                    f"label{number}_visual_width"
+                ] = ""
 
         output_rows.append(output_row)
 
