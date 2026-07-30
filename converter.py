@@ -293,36 +293,57 @@ def expand_source_data(
         .ne("")
     )
 
-    expanded_df["label_number"] = ""
-    expanded_df["total_labels"] = ""
+    # Use nullable integer columns instead of string columns.
+    expanded_df["label_number"] = pd.Series(
+        pd.NA,
+        index=expanded_df.index,
+        dtype="Int64",
+    )
+    
+    expanded_df["total_labels"] = pd.Series(
+        pd.NA,
+        index=expanded_df.index,
+        dtype="Int64",
+    )
+    
     expanded_df["ref"] = ""
-
-    valid_df = expanded_df.loc[valid_reference].copy()
-
-    valid_df["label_number"] = (
-        valid_df.groupby(
-            "base_ref",
-            sort=False,
-        ).cumcount()
-        + 1
+    
+    valid_reference = (
+        expanded_df["base_ref"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .ne("")
     )
-
-    valid_df["total_labels"] = (
-        valid_df.groupby(
-            "base_ref",
-            sort=False,
-        )["base_ref"].transform("size")
-    )
-
+    
+    # Calculate the sequence number for each reference.
     expanded_df.loc[
         valid_reference,
         "label_number",
-    ] = valid_df["label_number"]
-
+    ] = (
+        expanded_df.loc[valid_reference]
+        .groupby(
+            "base_ref",
+            sort=False,
+        )
+        .cumcount()
+        .add(1)
+        .astype("Int64")
+    )
+    
+    # Calculate the total number of labels for each reference.
     expanded_df.loc[
         valid_reference,
         "total_labels",
-    ] = valid_df["total_labels"]
+    ] = (
+        expanded_df.loc[valid_reference]
+        .groupby(
+            "base_ref",
+            sort=False,
+        )["base_ref"]
+        .transform("size")
+        .astype("Int64")
+    )
 
     # -----------------------------------------------------
     # Step 4: Generate references such as y050-01/08
