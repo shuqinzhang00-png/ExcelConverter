@@ -45,22 +45,31 @@ with st.expander("View required source format"):
 
 st.header("Step 2 — Conversion Settings")
 
-settings_col1, settings_col2, settings_col3 = st.columns(3)
+settings_col1, settings_col2, settings_col3, settings_col4 = (
+    st.columns(4)
+)
 
 with settings_col1:
+    conversion_type = st.selectbox(
+        "Conversion type",
+        options=["HPW", "YPW"],
+        index=0,
+        help=(
+            "HPW keeps the source SP value. "
+            "YPW can extract the SP name from labels "
+            "containing 陽上 or parentheses."
+        ),
+    )
+with settings_col2:
     records_per_row = st.number_input(
         "Records on each output row",
         min_value=1,
         max_value=20,
         value=4,
         step=1,
-        help=(
-            "For example, selecting 4 creates "
-            "sp1/ref1/label1 through sp4/ref4/label4."
-        ),
     )
 
-with settings_col2:
+with settings_col3:
     large_width = st.number_input(
         "Large-font maximum visual width",
         min_value=1,
@@ -69,7 +78,7 @@ with settings_col2:
         step=1,
     )
 
-with settings_col3:
+with settings_col4:
     medium_width = st.number_input(
         "Medium-font maximum visual width",
         min_value=2,
@@ -136,6 +145,7 @@ if convert_clicked:
                 group_size=int(records_per_row),
                 large_width=int(large_width),
                 medium_width=int(medium_width),
+                conversion_type=conversion_type,
             )
 
         st.session_state["conversion_result"] = {
@@ -145,8 +155,8 @@ if convert_clicked:
             "mail_merge": result["mail_merge"],
             "validation": result["validation"],
             "records_per_row": int(records_per_row),
+            "conversion_type": conversion_type,
         }
-
         st.success("Conversion completed successfully.")
 
     except Exception as error:
@@ -162,24 +172,29 @@ if "conversion_result" in st.session_state:
 
     st.header("Step 4 — Review Results")
 
-    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1, metric2, metric3, metric4, metric5 = st.columns(5)
 
     metric1.metric(
+        "Conversion type",
+        result["conversion_type"],
+    )
+    
+    metric2.metric(
         "Original rows",
         len(result["original"]),
     )
-
-    metric2.metric(
+    
+    metric3.metric(
         "Expanded labels",
         len(result["expanded"]),
     )
-
-    metric3.metric(
+    
+    metric4.metric(
         "Mail merge rows",
         len(result["mail_merge"]),
     )
-
-    metric4.metric(
+    
+    metric5.metric(
         "Records per row",
         result["records_per_row"],
     )
