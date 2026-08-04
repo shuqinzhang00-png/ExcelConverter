@@ -192,7 +192,7 @@ def extract_name_from_parentheses(value: Any) -> str:
 
     # Remove 陽上 from the beginning.
     name = re.sub(
-        r"^陽上\s*",
+        r"^陽上|阳上\s*",
         "",
         name,
     ).strip()
